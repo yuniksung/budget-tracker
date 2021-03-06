@@ -21,64 +21,70 @@ const FILES_TO_CACHE = [
 
 
 // Install the service worker
-self.addEventListener('install', function(evt) {
-  evt.waitUntil(
-    caches.open(CACHE_NAME).then(cache => {
-      console.log('Your files were pre-cached successfully!');
-      return cache.addAll(FILES_TO_CACHE);
-    })
+self.addEventListener("install", function (event) {
+  event.waitUntil(
+    Promise.all([
+      caches.open(STATIC_CACHE).then(function (cache) {
+        return cache.addAll(FILES_TO_CACHE);
+      }),
+      caches.open(DATA_CACHE).then(function (cache) {
+        return cache.add("/api/transaction");
+      }),
+    ])
   );
+
   self.skipWaiting();
 });
-// Activate the service worker and remove old data from the cache
-self.addEventListener('activate', function(evt) {
-  evt.waitUntil(
-    caches.keys().then(keyList => {
+
+// clear out old caches in the activate stage
+self.addEventListener("activate", function (event) {
+  const allowedCaches = [STATIC_CACHE, DATA_CACHE];
+
+  event.waitUntil(
+    caches.keys().then(function (cacheNames) {
       return Promise.all(
-        keyList.map(key => {
-          if (key !== CACHE_NAME && key !== DATA_CACHE_NAME) {
-            console.log('Removing old cache data', key);
-            return caches.delete(key);
+        cacheNames.map(function (cacheName) {
+          if (!allowedCaches.includes(cacheName)) {
+            return caches.delete(cacheName);
           }
         })
       );
     })
   );
-  self.clients.claim();
 });
-// Intercept fetch requests
-self.addEventListener('fetch', function(evt) {
-  if (evt.request.url.includes('/api/')) {
-    evt.respondWith(
-      caches
-        .open(DATA_CACHE_NAME)
-        .then(cache => {
-          return fetch(evt.request)
-            .then(response => {
-              // If the response was good, clone it and store it in the cache.
-              if (response.status === 200) {
-                cache.put(evt.request.url, response.clone());
-              }
+
+// fetch event listener:
+// GET /api/transaction - return cached data on fail
+// any other fetch - return any matching static cache or necessary response
+self.addEventListener("fetch", function (event) {
+  if (
+    event.request.method === "GET" &&
+    event.request.url.includes("/api/transaction")
+  ) {
+    event.respondWith(
+      caches.open(DATA_CACHE).then(cache => {
+        return fetch(event.request)
+          .then(response => {
+            if (response.status === 200) {
+              cache.put(event.request, response.clone());
               return response;
-            })
-            .catch(err => {
-              // Network request failed, try to get it from the cache.
-              return cache.match(evt.request);
+            }
+          })
+          .catch(err => {
+            return cache.match(event.request).then(response => {
+              return response;
             });
-        })
-        .catch(err => console.log(err))
+          });
+      })
     );
+
     return;
   }
-  evt.respondWith(
-    fetch(evt.request).catch(function() {
-      return caches.match(evt.request).then(function(response) {
-        if (response) {
-          return response;
-        } else if (evt.request.headers.get('accept').includes('text/html')) {
-          // return the cached home page for all requests for html pages
-          return caches.match('/');
-        }
+
+  event.respondWith(
+    caches.open(STATIC_CACHE).then(cache => {
+      return cache.match(event.request).then(response => {
+        return response || fetch(event.request);
       });
     })
   );
